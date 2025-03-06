@@ -116,7 +116,7 @@ unsigned char entry_size[ENTRIES_PER_PAGE];
 unsigned short entry_timer = ENTRY_TIMER_DUR;
 bool long_entry_displayed = false;
 bool copy_mode = false;
-static char devicespec[256] = "N:";
+static char devicespec[128]; // For opening link files
 
 extern unsigned char copy_host_slot;
 extern bool backToFiles;
@@ -302,17 +302,7 @@ void select_file_choose(char visibleEntries)
     select_display_long_filename();
   }
 }
-void delay(uint16_t ms)
-{
-    volatile uint16_t i, j;
-    for (i = 0; i < ms; i++)
-    {
-        for (j = 0; j < 255; j++)  // Adjust for desired timing
-        {
-            // Do nothing, just waste time
-        }
-    }
-}
+
 void select_file_link(void)
 {
   const char *e = (const char *)selected_host_name;
@@ -371,20 +361,14 @@ void select_file_link(void)
     tnfsHostname[j] = '\0';  // Null-terminate
   }
   
-  /*
-  screen_clear_line(23);
-  screen_puts(0, 23, (char *)e);
-  delay(500);
-  */
-
-  // Start with "N1:"
+  // Prepare the devicespec starting with "N1:"
   devicespec[0] = 'N';
   devicespec[1] = '1';
   devicespec[2] = ':';
   i = 3;
   j = 0;
 
-  // Copy tnfsHostname (protocol + hostname)
+  // Copy tnfsHostname to the devicespec (protocol + hostname)
   while (tnfsHostname[j] != '\0' && i < sizeof(devicespec) - 1)
   {
       devicespec[i] = tnfsHostname[j];
@@ -393,14 +377,15 @@ void select_file_link(void)
   }
 
   // add separator '/' before appending the path
-  /*
+  /* // Not sure if this is needed. seems to work fine without it
   if (tnfsHostname[j - 1] != '/' && i < sizeof(devicespec) - 1)
   {
       devicespec[i] = '/';
       i++;
   }
   */
-  // Append path
+
+  // Append path to devicespec
   j = 0;
   while (path[j] != '\0' && i < sizeof(devicespec) - 1)
   {
@@ -409,10 +394,11 @@ void select_file_link(void)
       j++;
   }
   
+  // Get filename
   io_set_directory_position(pos);
   e = io_read_directory(128, 0x20);
 
-  // Append filename
+  // Append filename to devicespec
   j = 0;
   while (e[j] != '\0' && i < sizeof(devicespec) - 1)
   {
@@ -420,10 +406,6 @@ void select_file_link(void)
       i++;
       j++;
   }
-
-  screen_clear_line(23);
-  screen_puts(0, 23, devicespec);
-  delay(200);
 
   // Clear out tnfsHostname
   for (i = 0; i < sizeof(tnfsHostname); i++)
@@ -434,14 +416,12 @@ void select_file_link(void)
   // Attempt to read from the file
   b = network_open(devicespec, OPEN_MODE_READ, OPEN_TRANS_NONE);
   b = network_read(devicespec, (uint8_t *)tnfsHostname, 128);
+  network_close(devicespec);
 
-  if (b < 0){ // error
-  screen_clear_line(23);
-  screen_puts(0, 23, "Error opening link file");
-  delay(500);
-  }
-  
-  if (b <= 0)
+  /* The contents should be (much) larger than 3 bytes. This takes into account that 
+   * the OS or a text editor may add CR and/or LF to an "empty" link file.
+   */
+  if (b <= 3)
   {
     // File is empty or error reading, continue using the filename as link to host
     io_set_directory_position(pos);
@@ -450,14 +430,15 @@ void select_file_link(void)
   }
   else
   {
-    // Remove trailing CR/LF characters
+    // The file has something in it. use it for the link hostname
     for (i = 0; tnfsHostname[i] != '\0'; i++)
     {
-        if (tnfsHostname[i] == 13 || tnfsHostname[i] == 10)
-        {
-            tnfsHostname[i] = '\0';
-            //break;  // Stop at the first CR/LF
-        }
+      // Remove trailing CR/LF characters
+      if (tnfsHostname[i] == 13 || tnfsHostname[i] == 10)
+      {
+          tnfsHostname[i] = '\0';
+          //break;  // Stop at the first CR/LF?
+      }
     }
   }
 
