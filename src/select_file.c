@@ -19,8 +19,10 @@
 #include <string.h>
 #endif /* CMOC_VERSION */
 
+#include <ctype.h>
 #include "select_file.h"
 #include "fuji_typedefs.h"
+#include "fujinet-network.h"
 
 #ifdef BUILD_ADAM
 #include "adam/screen.h"
@@ -114,6 +116,7 @@ unsigned char entry_size[ENTRIES_PER_PAGE];
 unsigned short entry_timer = ENTRY_TIMER_DUR;
 bool long_entry_displayed = false;
 bool copy_mode = false;
+static char devicespec[256] = "N:";
 
 extern unsigned char copy_host_slot;
 extern bool backToFiles;
@@ -299,27 +302,164 @@ void select_file_choose(char visibleEntries)
     select_display_long_filename();
   }
 }
-
+void delay(uint16_t ms)
+{
+    volatile uint16_t i, j;
+    for (i = 0; i < ms; i++)
+    {
+        for (j = 0; j < 255; j++)  // Adjust for desired timing
+        {
+            // Do nothing, just waste time
+        }
+    }
+}
 void select_file_link(void)
 {
-  const char *e;
+  const char *e = (const char *)selected_host_name;
   char tnfsHostname[128];
+  bool is_protocol = 0;
+  int i = 0, j = 7, b = 0;
   bar_clear(false);
 
   io_open_directory(selected_host_slot, path, filter);
 
   if (io_error())
   {
-      sf_subState = SF_DONE;
-      state = HOSTS_AND_DEVICES;
-      return;
+    sf_subState = SF_DONE;
+    state = HOSTS_AND_DEVICES;
+    return;
   }
 
-  io_set_directory_position(pos);
+  // Check if selected host name contains a colon, indicating a protocol
+  while (e[i] != '\0')
+  {
+    if (e[i] == ':')
+    {
+      is_protocol = 1;
+      break;  // Stop checking once we find a colon
+    }
+    i++;
+  }
 
+  if (is_protocol)
+  {
+    // If protocol, copy to tnfsHostname
+    for (i = 0; e[i] != '\0' && i < sizeof(tnfsHostname) - 1; i++)
+    {
+      tnfsHostname[i] = e[i];
+    }
+    tnfsHostname[i] = '\0';  // Ensure null-termination
+  }
+  else if ((e[0] == 'S' || e[0] == 's') && (e[1] == 'D' || e[1] == 'd') && e[2] == '\0')
+  {
+    // If "SD" found, change it to "SD://"
+    strcpy(tnfsHostname, "SD://");
+  }
+  else
+  {
+    // If no protocol, assume TNFS and prepend "TNFS://"
+    strcpy(tnfsHostname, "TNFS://");
+
+    i = 0;  // Reset i to copy the hostname
+    while (e[i] != '\0' && j < sizeof(tnfsHostname) - 1)
+    {
+      tnfsHostname[j] = e[i];
+      i++;
+      j++;
+    }
+
+    tnfsHostname[j] = '\0';  // Null-terminate
+  }
+  
+  /*
+  screen_clear_line(23);
+  screen_puts(0, 23, (char *)e);
+  delay(500);
+  */
+
+  // Start with "N1:"
+  devicespec[0] = 'N';
+  devicespec[1] = '1';
+  devicespec[2] = ':';
+  i = 3;
+  j = 0;
+
+  // Copy tnfsHostname (protocol + hostname)
+  while (tnfsHostname[j] != '\0' && i < sizeof(devicespec) - 1)
+  {
+      devicespec[i] = tnfsHostname[j];
+      i++;
+      j++;
+  }
+
+  // add separator '/' before appending the path
+  /*
+  if (tnfsHostname[j - 1] != '/' && i < sizeof(devicespec) - 1)
+  {
+      devicespec[i] = '/';
+      i++;
+  }
+  */
+  // Append path
+  j = 0;
+  while (path[j] != '\0' && i < sizeof(devicespec) - 1)
+  {
+      devicespec[i] = path[j];
+      i++;
+      j++;
+  }
+  
+  io_set_directory_position(pos);
   e = io_read_directory(128, 0x20);
 
-  strcpy(tnfsHostname, &e[1]);
+  // Append filename
+  j = 0;
+  while (e[j] != '\0' && i < sizeof(devicespec) - 1)
+  {
+      devicespec[i] = e[j];
+      i++;
+      j++;
+  }
+
+  screen_clear_line(23);
+  screen_puts(0, 23, devicespec);
+  delay(200);
+
+  // Clear out tnfsHostname
+  for (i = 0; i < sizeof(tnfsHostname); i++)
+  {
+    tnfsHostname[i] = '\0';
+  }
+
+  // Attempt to read from the file
+  b = network_open(devicespec, OPEN_MODE_READ, OPEN_TRANS_NONE);
+  b = network_read(devicespec, (uint8_t *)tnfsHostname, 128);
+
+  if (b < 0){ // error
+  screen_clear_line(23);
+  screen_puts(0, 23, "Error opening link file");
+  delay(500);
+  }
+  
+  if (b <= 0)
+  {
+    // File is empty or error reading, continue using the filename as link to host
+    io_set_directory_position(pos);
+    e = io_read_directory(128, 0x20);
+    strcpy(tnfsHostname, &e[1]); 
+  }
+  else
+  {
+    // Remove trailing CR/LF characters
+    for (i = 0; tnfsHostname[i] != '\0'; i++)
+    {
+        if (tnfsHostname[i] == 13 || tnfsHostname[i] == 10)
+        {
+            tnfsHostname[i] = '\0';
+            //break;  // Stop at the first CR/LF
+        }
+    }
+  }
 
   io_close_directory();
 
@@ -383,6 +523,8 @@ unsigned select_file_entry_type(void)
 {
   const char *e;
   unsigned result;
+  int len = strlen(e), i;
+  char ext[5] = {0};
 
   io_open_directory(selected_host_slot, path, filter);
 
@@ -392,6 +534,21 @@ unsigned select_file_entry_type(void)
 
   if (e[0] != '\0' && e[strlen(e)-1] == '/') result = ENTRY_TYPE_FOLDER;
   else if (e[0] == '+') result = ENTRY_TYPE_LINK;
+  else if (len >= 4)
+  {
+      // Extract the last 4 characters and compare case-insensitively
+      for (i = 0; i < 4; i++)
+      {
+          ext[i] = tolower(e[len - 4 + i]);
+      }
+
+      if ((strcmp(ext, ".txt") == 0) ||
+          (strcmp(ext, ".md") == 0) ||
+          (strcmp(ext, ".lst") == 0))
+      {
+          result = ENTRY_TYPE_TEXT;
+      }
+  }
   else result = ENTRY_TYPE_FILE;
 
   io_close_directory();
